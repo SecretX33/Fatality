@@ -1,5 +1,7 @@
 ------------ CONFIGURATION -----------
 local LIMIT = 10					-- number of deaths to report per combat session (default: 10)
+local ENABLE_IN_RAID = true         -- enable in raid
+local ENABLE_IN_DUNGEONS = true     -- enable in dungeons
 local OVERKILL = true				-- toggle overkill (default: true)
 local RAID_ICONS = true				-- toggle raid icons (default: true)
 local SHORT_NUMBERS = true			-- toggle short numbers [i.e. 9431 = 9.4k] (default: true)
@@ -16,7 +18,7 @@ local MAX_PRIORITY                = 1000000
 local METAMORPHOSIS = 47241
 
 local Fatality = CreateFrame("frame")
-local status, death, unknown = "|cff39d7e5Fatality: %s|r", "Fatality: %s > %s", "Fatality: %s%s > Unknown"
+local death, unknown = "Fatality: %s > %s", "Fatality: %s%s > Unknown"
 local limit = "|cffffff00(%s) Report cannot be sent because it exceeds the maximum character limit of 255. To fix this, decrease EVENT_HISTORY in Fatality.lua and /reload your UI.|r"
 local special = { ["SPELL_DAMAGE"] = true, ["SPELL_PERIODIC_DAMAGE"] = true, ["RANGE_DAMAGE"] = true }
 local instances = {	["The Ruby Sanctum"] = true, ["The Obsidian Sanctum"] = true }
@@ -156,11 +158,7 @@ local function GetPartyType()
 end
 
 local function say(message)
-	if OUTPUT == "SELF" then
-		print(message)
-	else
-		SendChatMessage(message, GetPartyType())
-	end
+	if(message~=nil and message~="") then SendChatMessage(message, GetPartyType()) end
 end
 
 -- Addon is going to check how many messages got sent in the last 'gracePeriodForSendMessages', and if its equal or maxMessageSent then this function will return true, indicating that player cannot send more messages for now
@@ -299,7 +297,7 @@ function Fatality:FormatOutput(guid, known)
 
 	if msg:len() > 255 and OUTPUT ~= "SELF" then
 		local err = format(limit, destName)
-		print(format(status, err))
+		send(err)
 		return
 	end
 	
@@ -367,7 +365,7 @@ function Fatality:ReportDeath(guid)
 end
 
 function Fatality:COMBAT_LOG_EVENT_UNFILTERED(timestamp, event, srcGUID, srcName, srcFlags, destGUID, destName, destFlags, ...)
-	if not UnitInRaid(destName) then return end
+	if not Fatality:IsInRaid(destName) then return end
 
 	local spellID, spellName, amount, overkill, environment, crit, crush
 
@@ -430,67 +428,6 @@ function Fatality:COMBAT_LOG_EVENT_UNFILTERED(timestamp, event, srcGUID, srcName
 		self:ReportDeath(destGUID)
 	end
 
-end
-
-function Fatality:ClearData()
-	countMsgsSent = 0
-	wipe(candidates)
-end
-
-function Fatality:RegisterAddonEvents()
-	debug("Registering \"only if inside instance\" addon events")
-	self:RegisterEvents(
-		"PLAYER_REGEN_DISABLED",
-		"PLAYER_REGEN_ENABLED",
-		"COMBAT_LOG_EVENT_UNFILTERED",
-		"CHAT_MSG_WHISPER",
-		"CHAT_MSG_SAY",
-		"CHAT_MSG_PARTY",
-		"CHAT_MSG_RAID",
-		"CHAT_MSG_RAID_LEADER",
-		"CHAT_MSG_RAID_WARNING"
-	)
-	if unit_health then
-		self:RegisterEvent("UNIT_HEALTH")
-	end
-end
-
-function Fatality:UnregisterAddonEvents()
-	debug("Unregistering \"only if inside instance\" addon events")
-	self:UnregisterEvents(
-		"PLAYER_REGEN_DISABLED",
-		"PLAYER_REGEN_ENABLED",
-		"COMBAT_LOG_EVENT_UNFILTERED",
-		"CHAT_MSG_WHISPER",
-		"CHAT_MSG_SAY",
-		"CHAT_MSG_PARTY",
-		"CHAT_MSG_RAID",
-		"CHAT_MSG_RAID_LEADER",
-		"CHAT_MSG_RAID_WARNING"
-	)
-	if unit_health then
-		self:UnregisterEvent("UNIT_HEALTH")
-	end
-end
-
-function Fatality:CheckEnable()
-	if not self.db.enabled then return end
-	local _, instance = IsInInstance()
-	if instance == "raid" then
-		unit_health = instances[GetRealZoneText()] -- Only use UNIT_HEALTH to determine deaths in predefined instances
-		self:ClearData()
-		self:RegisterAddonEvents()
-	else
-		self:UnregisterAddonEvents()
-	end
-end
-
-function Fatality:UNIT_HEALTH(unit)
-	--if not units[unit] then return end
-	if not Fatality:IsInRaid(GetUnitName(unit)) then return end
-	if UnitIsDead(unit) or UnitBuff(unit, spiritOfRedemption) then
-		self:ReportDeath(UnitGUID(unit))
-	end
 end
 
 local function splitVersion(version, delimiter)
@@ -572,9 +509,9 @@ do
 	local syncHandlers = {}
 
 	syncHandlers["Fatality-Prio"] = function(msg, channel, sender)
-		if msg == "Hi!" and Fatality.db.enabled then
+		if msg == "Hi!" and Fatality.db.enabled and Fatality:IsPlayerInsideValidInstance() then
 			sendSync("Fatality-Prio", Fatality.Priority)
-		else
+		elseif msg ~= "Hi!" then
 			local priority = tonumber(msg)
 			if sender and sender~="" and (priority==nil or type(priority) == "number") then
 				--debug(format("%s sent you his priority (%s)",sender,(priority or 0))) end
@@ -592,7 +529,7 @@ do
 	syncHandlers["Fatality-Ver"] = function(msg, channel, sender)
 		if msg == "Hi!" then
 			sendSync("Fatality-Ver", Fatality.Version)
-		else
+		elseif msg ~= "Hi!" then
 			--debug("Received from player " .. (sender or "unknown") .. " version " .. (msg or "unknown"))
 			if msg and msg~="" and sender and sender~="" and raid and raid[sender] then
 				raid[sender].version = msg
@@ -737,17 +674,91 @@ do
 	end
 end
 
---function Fatality:RAID_ROSTER_UPDATE()
---	wipe(units)
---	local name, group
---	local max_group = 6 - (GetInstanceDifficulty() % 2) * 3
---	for i=1,40 do
---		name, _, group = GetRaidRosterInfo(i)
---		if name and group < max_group then
---			units["raid" .. i] = true
---		end
---	end
---end
+
+function Fatality:IsPlayerInsideValidInstance()
+	local _, instance = IsInInstance()
+	if (instance == "raid" and ENABLE_IN_RAID) or (instance == "party" and ENABLE_IN_DUNGEONS) then
+		return true
+	end
+	return false
+end
+
+function Fatality:CheckEnable()
+	if not self.db.enabled then return end
+	local _, instance = IsInInstance()
+	if Fatality:IsPlayerInsideValidInstance() or faDebug then
+		unit_health = instances[GetRealZoneText()] -- Only use UNIT_HEALTH to determine deaths in predefined instances
+		self:ClearData()
+		self:RegisterAddonEvents()
+	else
+		self:UnregisterAddonEvents()
+	end
+end
+
+function Fatality:ClearData()
+	countMsgsSent = 0
+	wipe(candidates)
+end
+
+function Fatality:RegisterAddonEvents()
+	debug("Registering \"only if inside instance\" addon events")
+	self:RegisterEvents(
+			"PLAYER_REGEN_DISABLED",
+			"PLAYER_REGEN_ENABLED",
+			"COMBAT_LOG_EVENT_UNFILTERED",
+			"CHAT_MSG_WHISPER",
+			"CHAT_MSG_SAY",
+			"CHAT_MSG_PARTY",
+			"CHAT_MSG_RAID",
+			"CHAT_MSG_RAID_LEADER",
+			"CHAT_MSG_RAID_WARNING"
+	)
+	if unit_health then
+		self:RegisterEvent("UNIT_HEALTH")
+	end
+	-- Reinforming people about your priority if it got modified when you unregistered it or some other reason
+	if not faDebug then
+		if(raid and raid[UnitName("player")] and Fatality.Priority ~= raid[UnitName("player")].priority and UnitHealth("player") > 1) then
+			debug("Reinforming people about your priority if you nulled it when your events got unregistered")
+			sendSync("Fatality-Prio", Fatality.Priority)
+		end
+	-- But if you have debug on, this function will be called regardless of whenever you are inside the instance or not, so this prevents dead players with debug on from stealing place of those who can actually speak
+	elseif UnitHealth("player") <= 1 then
+		sendSync("Fatality-Prio", nil)
+	end
+end
+
+function Fatality:UnregisterAddonEvents()
+	debug("Unregistering \"only if inside instance\" addon events")
+	self:UnregisterEvents(
+			"PLAYER_REGEN_DISABLED",
+			"PLAYER_REGEN_ENABLED",
+			"COMBAT_LOG_EVENT_UNFILTERED",
+			"CHAT_MSG_WHISPER",
+			"CHAT_MSG_SAY",
+			"CHAT_MSG_PARTY",
+			"CHAT_MSG_RAID",
+			"CHAT_MSG_RAID_LEADER",
+			"CHAT_MSG_RAID_WARNING"
+	)
+	if unit_health then
+		self:UnregisterEvent("UNIT_HEALTH")
+	end
+	-- If the player debug mode is off, or if he is dead/ghost, then send nil as priority when unregistering the events to tell other people that this player cannot speak
+	if not faDebug or UnitHealth("player") <= 1 then sendSync("Fatality-Prio", nil) end
+end
+
+function Fatality:UNIT_HEALTH(unit)
+	--if not units[unit] then return end
+	if not Fatality:IsInRaid(GetUnitName(unit)) then return end
+	if UnitIsDead(unit) or UnitBuff(unit, spiritOfRedemption) then
+		self:ReportDeath(UnitGUID(unit))
+	end
+end
+
+function Fatality:PLAYER_REGEN_ENABLED()
+	playersUnableToSpeak = {}
+end
 
 function Fatality:PLAYER_REGEN_DISABLED()
 	self:ClearData()
@@ -767,20 +778,14 @@ function Fatality:PLAYER_ENTERING_WORLD()
 	end
 end
 
-function Fatality:PLAYER_LOGIN()
-	self:CheckEnable()
-end
-
-function Fatality:PLAYER_REGEN_ENABLED()
-	playersUnableToSpeak = {}
-end
-
 do
 	local function sortVersion(v1, v2)
 		if not v1 then return false end
 		if not v2 then return true end
 		if not v1.version then return false end
 		if not v2.version then return true end
+		if not v1.priority then return false end
+		if not v2.priority then return true end
 
 		local a = splitVersion(v1.version,".")
 		local b = splitVersion(v2.version,".")
@@ -790,7 +795,7 @@ do
 			if not a[i] or not b[i] then return a[i]~=nil end
 			if a[i]~=b[i] then return a[i] > b[i] end
 		end
-		return true
+		return false
 	end
 
 	function Fatality:ShowVersions()
@@ -813,7 +818,7 @@ do
 				if v.version then
 					msg = format("|cffff533f<|r|cfffb2c2cFatality|r|cffff533f>|r |cffff9e9e%s:|r %s", v.name, v.version)
 					if not v.priority and UnitIsConnected(v.name) then
-						msg = msg .. " (disabled)"
+						msg = msg .. " (disabled or outside instance)"
 					elseif not UnitIsConnected(v.name) then
 						msg = msg .. " (offline)"
 					end
@@ -835,51 +840,84 @@ do
 	end
 end
 
-local function slashCommand(typed)
-	local cmd = string.match(typed,"^(%w+)") -- Gets the first word the user has typed
-	if cmd~=nil then cmd = cmd:lower() end   -- And makes it lower case
-	local extra = removeWords(typed, 1)
-	if(cmd=="debug") then
+----------------------
+--  Slash Commands  --
+----------------------
+do
+	local function showHelp()
+		send("Please use one of the following: on, off, toggle, version.")
+	end
+
+	local function toggleAddon(state)
+		if state==nil then state = not Fatality.db.enabled end
+		if state then
+			Fatality.db.enabled = true
+			topPriority = true
+			Fatality:RegisterEvents(
+					"ZONE_CHANGED",
+					"ZONE_CHANGED_NEW_AREA",
+					"PLAYER_ENTERING_WORLD"
+			)
+			Fatality:ResetRaid()
+			Fatality:RAID_ROSTER_UPDATE()
+			Fatality:PARTY_MEMBERS_CHANGED()
+			Fatality:CheckEnable()
+			send("|cff00ff00on|r")
+		else
+			Fatality.db.enabled = false
+			Fatality:UnregisterAddonEvents()
+			Fatality:ClearData()
+			Fatality:UnregisterEvents(
+					"ZONE_CHANGED",
+					"ZONE_CHANGED_NEW_AREA",
+					"PLAYER_ENTERING_WORLD"
+			)
+			sendSync("Fatality-Prio", nil)
+			send("|cffff0000off|r")
+		end
+	end
+
+	local function toggleDebug()
 		faDebug = not faDebug
 		Fatality.db.debug = faDebug
+		Fatality:CheckEnable()
 		send("debug mode turned " .. (faDebug and "|cff00ff00on|r" or "|cffff0000off|r"))
-	elseif (cmd=="prio" or cmd=="priority" or cmd=="p") then
-		send("my priority is " .. Fatality.Priority)
-	elseif (cmd=="setprio" or cmd=="setpriority" or cmd=="sp") and faDebug then
-		if extra~=nil and tonumber(extra)~=nil then
+	end
+
+	local function showPriority()
+		if faDebug then send("My priority is " .. Fatality.Priority) end
+	end
+
+	local function setPriority(extra)
+		if faDebug and extra~=nil and tonumber(extra)~=nil then
 			Fatality.Priority = tonumber(extra)
 			send("priority set to " .. extra)
 			sendSync("Fatality-Prio", Fatality.Priority)
 		end
-	elseif (cmd=="ver" or cmd=="version") then
-		Fatality:ShowVersions()
-	elseif (cmd=="priotable" or cmd=="pt" or cmd=="tp") and faDebug then
+	end
+
+	local function listPriorities()
+		if not faDebug then return end
 		send("Table of priorities (TP)")
 		for i,n in ipairs(raidOrdered) do send(format("%s. %s (%s - %s)",i,n,(raid[n].priority or 0),(raid[n].version or 0))) end
-	elseif Fatality.db.enabled then
-		Fatality.db.enabled = false
-	    Fatality:UnregisterAddonEvents()
-		Fatality:ClearData()
-		Fatality:UnregisterEvents(
-			"ZONE_CHANGED",
-			"ZONE_CHANGED_NEW_AREA",
-			"PLAYER_ENTERING_WORLD"
-		)
-		sendSync("Fatality-Prio", nil)
-		print(format(status, "|cffff0000off|r"))
-	else
-		Fatality.db.enabled = true
-		topPriority = true
-		Fatality:RegisterAddonEvents()
-		Fatality:RegisterEvents(
-			"ZONE_CHANGED",
-			"ZONE_CHANGED_NEW_AREA",
-			"PLAYER_ENTERING_WORLD"
-		)
-		Fatality:ResetRaid()
-		Fatality:RAID_ROSTER_UPDATE()
-		Fatality:PARTY_MEMBERS_CHANGED()
-		print(format(status, "|cff00ff00on|r"))
+	end
+
+	function Fatality:SlashCommand(typed)
+		local cmd = string.match(typed,"^(%w+)") -- Gets the first word the user has typed
+		if cmd~=nil then cmd = cmd:lower() end   -- And makes it lower case
+		local extra = removeWords(typed, 1)
+		if extra~=nil then extra = extra:lower() end
+
+		if(cmd=="help" or cmd=="?" or cmd=="" or cmd==nil) then showHelp()
+		elseif (cmd=="toggle") then toggleAddon()
+		elseif (cmd=="on" or cmd=="enable") then toggleAddon(true)
+		elseif (cmd=="off" or cmd=="disable") then toggleAddon(false)
+		elseif (cmd=="prio" or cmd=="priority" or cmd=="p") then showPriority()
+		elseif (cmd=="setprio" or cmd=="setpriority" or cmd=="sp") then setPriority(extra)
+		elseif (cmd=="priotable" or cmd=="pt" or cmd=="tp") then listPriorities()
+		elseif (cmd=="ver" or cmd=="version") then Fatality:ShowVersions()
+		elseif (cmd=="debug") then toggleDebug()
+		end
 	end
 end
 
@@ -911,7 +949,7 @@ function Fatality:ADDON_LOADED(addon)
 	Fatality.Version = GetAddOnMetadata("Fatality", "Version")
 
 	SLASH_FATALITY1, SLASH_FATALITY2 = "/fatality", "/fat"
-	SlashCmdList.FATALITY = function(cmd) slashCommand(cmd) end
+	SlashCmdList.FATALITY = function(cmd) Fatality:SlashCommand(cmd) end
 	debug("remember that debug mode is |cff00ff00ON|r.")
 
 	self:RegisterEvents(
@@ -923,8 +961,7 @@ function Fatality:ADDON_LOADED(addon)
 		self:RegisterEvents(
 			"ZONE_CHANGED",
 			"ZONE_CHANGED_NEW_AREA",
-			"PLAYER_ENTERING_WORLD",
-			"PLAYER_LOGIN"
+			"PLAYER_ENTERING_WORLD"
 		)
 	end
 	self:RAID_ROSTER_UPDATE()
