@@ -685,7 +685,6 @@ end
 
 function Fatality:CheckEnable()
 	if not self.db.enabled then return end
-	local _, instance = IsInInstance()
 	if Fatality:IsPlayerInsideValidInstance() or faDebug then
 		unit_health = instances[GetRealZoneText()] -- Only use UNIT_HEALTH to determine deaths in predefined instances
 		self:ClearData()
