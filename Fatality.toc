@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: Fatality
+## Notes: Announces player deaths to chat. Configuration via Lua.
+## SavedVariables: FatalityDB
+## Author: Moop & SecretX (Freezingice @ WoW-Brasil)
+## Version: 1.1.5
+
+Fatality.lua
