@@ -12,10 +12,10 @@ local maxMessagesSent             = 3     -- Max messages that can be send at on
 local gracePeriodForSendMessages  = 1.3   -- Assuming that we can send at most 'maxMessagesSent' every 'gracePeriodForSendMessages' seconds
 -- Chat Variables
 local timeMessagesSent            = {}
-local queuedMessages
+local queuedMessages              = {}
 local playersUnableToSpeak        = {}
 local MAX_PRIORITY                = 1000000
-local METAMORPHOSIS = 47241
+local METAMORPHOSIS               = 47241
 
 local Fatality = CreateFrame("frame")
 local death, unknown = "Fatality: %s > %s", "Fatality: %s%s > Unknown"
@@ -180,7 +180,7 @@ end
 -- Frame update handler
 local function onUpdate(this)
 	if not Fatality.db.enabled then return end
-	if not queuedMessages then
+	if #queuedMessages == 0 then
 		this:SetScript("OnUpdate", nil)
 		return
 	end
@@ -189,12 +189,10 @@ local function onUpdate(this)
 	table.insert(timeMessagesSent, GetTime())
 	say(queuedMessages[1])
 	table.remove(queuedMessages,1)
-	if getTableLength(queuedMessages)==0 then queuedMessages = nil end
 end
 
 local function queueMsg(msg)
 	if(msg~=nil) then
-		queuedMessages = queuedMessages or {}
 		table.insert(queuedMessages, msg)
 		Fatality:SetScript("OnUpdate", onUpdate)
 	end
@@ -697,6 +695,7 @@ end
 function Fatality:ClearData()
 	countMsgsSent = 0
 	wipe(candidates)
+	wipe(timeMessagesSent)
 end
 
 function Fatality:RegisterAddonEvents()
@@ -745,6 +744,7 @@ function Fatality:UnregisterAddonEvents()
 	end
 	-- If the player debug mode is off, or if he is dead/ghost, then send nil as priority when unregistering the events to tell other people that this player cannot speak
 	if not faDebug or UnitHealth("player") <= 1 then sendSync("Fatality-Prio", nil) end
+	wipe(timeMessagesSent)
 end
 
 function Fatality:UNIT_HEALTH(unit)
@@ -756,7 +756,7 @@ function Fatality:UNIT_HEALTH(unit)
 end
 
 function Fatality:PLAYER_REGEN_ENABLED()
-	playersUnableToSpeak = {}
+	wipe(playersUnableToSpeak)
 end
 
 function Fatality:PLAYER_REGEN_DISABLED()
@@ -844,7 +844,7 @@ end
 ----------------------
 do
 	local function showHelp()
-		send("Please use one of the following: on, off, toggle, version.")
+		send("Please use one of the following: on, off, toggle (t), version.")
 	end
 
 	local function toggleAddon(state)
@@ -908,7 +908,7 @@ do
 		if extra~=nil then extra = extra:lower() end
 
 		if(cmd=="help" or cmd=="?" or cmd=="" or cmd==nil) then showHelp()
-		elseif (cmd=="toggle") then toggleAddon()
+		elseif (cmd=="toggle" or cmd=="t") then toggleAddon()
 		elseif (cmd=="on" or cmd=="enable") then toggleAddon(true)
 		elseif (cmd=="off" or cmd=="disable") then toggleAddon(false)
 		elseif (cmd=="prio" or cmd=="priority" or cmd=="p") then showPriority()
